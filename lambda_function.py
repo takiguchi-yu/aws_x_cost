@@ -1,25 +1,43 @@
-import os
-import json
 import datetime as dt
 import pandas as pd
 import matplotlib.pyplot as plt
-# import japanize_matplotlib
 import boto3
 
 ce = boto3.client('ce')
 s3 = boto3.client('s3')
 
 def main():
-    # 現在日付を取得
+
+    # 直近7日間の開始日、終了日を取得する
+    start, end = get_start_end_date()
+
+    # AWS Cost Explorer 実行する
+    response = ce_get_cost_and_usage(start, end)
+
+    # AWS Cost Explorer の実行結果をpandaのdataframeの形式に加工する
+    dataset = make_dataframe(response)
+    
+    # 積み上げ棒グラフ内にデータラベルを表示する
+    save_bar(dataset)
+    
+    # S3アップロード
+    s3_upload_file('/tmp/cost.png', 'takiguchi-work-restdb', 'cost.png')
+
+def get_start_end_date():
+    """直近7日間の開始日、終了日を取得する"""
+
     now = dt.datetime.now()
     start = (now - dt.timedelta(days=8)).strftime('%Y-%m-%d')
     end = now.strftime('%Y-%m-%d')
+    return [start, end]
 
-    # AWS Cost Explorer 実行
-    response = ce.get_cost_and_usage (
+def ce_get_cost_and_usage(start_date, end_date):
+    """AWS Cost Explorer 実行する"""
+    
+    return ce.get_cost_and_usage (
         TimePeriod = {
-            'Start': start,
-            'End': end,
+            'Start': start_date,
+            'End': end_date,
         },
         Granularity='DAILY',  # DAILY or MONTHLY
         Metrics = [
@@ -33,9 +51,12 @@ def main():
         ]
     )
 
+def make_dataframe(data):
+    """AWS Cost Explorer の実行結果をpandaのdataframeの形式に加工する"""
+    
     # 日ごとにループ
     dataframe = {}
-    for result in response['ResultsByTime']:
+    for result in data['ResultsByTime']:
         print(result)
         total = 0
         start_date = result['TimePeriod']['Start']
@@ -65,10 +86,12 @@ def main():
         service_amount['Others'] = round(total - sub_total, 1) # 集計対象以外の料金を算出
         dataframe[date] = service_amount
 
-    dataset = pd.DataFrame(dataframe)
-    
-    
-    # 積み上げ棒グラフ内にデータラベルを表示する
+    return pd.DataFrame(dataframe)
+
+def save_bar(dataset):
+    """積み上げ棒グラフ内にデータラベルを表示する"""
+
+    print(dataset)
     fig, ax = plt.subplots(figsize=(15, 8))
     for i in range(len(dataset)):
         ax.bar(dataset.columns, dataset.iloc[i], bottom=dataset.iloc[:i].sum())
@@ -82,19 +105,12 @@ def main():
     ax.set(xlabel='', ylabel='Cost ($)')
     ax.legend(dataset.index)
     plt.show()
-    
-    # S3アップロード
+    # 作成した積み上げ棒グラフを一時保存する
     fig.savefig('/tmp/cost.png')
-    # s3.put_object(
-    #     ACL='public-read',
-    #     Body='/tmp/cost.png',
-    #     Bucket='<バケット名>',
-    #     ContentType='image/png',
-    #     Key='cost.png',
-    # )
-    file_name = '/tmp/cost.png'
-    bucket = '<バケット名>'
-    object_name = 'cost.png'
+
+def s3_upload_file(file_name, bucket, object_name):
+    """S3にmatplotlibで作成したファイルをアップロードする"""
+
     response = s3.upload_file(file_name, bucket, object_name, 
         ExtraArgs={
             'ACL': 'public-read',
